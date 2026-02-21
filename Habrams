@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<meta name="theme-color" content="#0D1B2A"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="6-Page Memo"/>
+<title>Bezos 6-Page Memo</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{background:#F5F7FA;font-family:'Segoe UI',system-ui,sans-serif;overscroll-behavior:none}
+  textarea{font-family:Georgia,serif;resize:vertical}
+  button{cursor:pointer;-webkit-appearance:none}
+  ::-webkit-scrollbar{display:none}
+  input:focus,textarea:focus{outline:none}
+  .app{max-width:480px;margin:0 auto;min-height:100vh}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ─── Data ────────────────────────────────────────────────────────────────────
+
+const SECTIONS = [
+  { id:"exec", num:"01", title:"Executive Summary", subtitle:"½–1 page · Decision Required", icon:"⚡", color:"#1565C0", light:"#E3F2FD",
+    prompts:["What is the issue?","Why now?","What decision is required today?","What are the 2–3 options?","Recommended option (clearly stated)"],
+    placeholder:"State the decision required. This section must stand alone.\n\nIssue: ...\nWhy now: ...\nDecision required: ...\nOptions: A) ... B) ... C) ...\nRecommendation: ..." },
+  { id:"context", num:"02", title:"Context & Background", subtitle:"1 page · Situational Clarity", icon:"📊", color:"#1B5E20", light:"#E8F5E9",
+    prompts:["Historical context","Current performance baseline (data)","Constraints (budget, regulatory, technical)","Stakeholder impact"],
+    placeholder:"Establish situational clarity. Use evidence — avoid storytelling fluff.\n\nHistorical context: ...\nCurrent baseline: ...\nConstraints: ...\nStakeholder impact: ..." },
+  { id:"problem", num:"03", title:"Problem Definition", subtitle:"½–1 page · Root Issue", icon:"🎯", color:"#B71C1C", light:"#FFEBEE",
+    prompts:["Observable problem","Impact (financial, operational, customer)","Risk of inaction","Strategic implications"],
+    placeholder:"Define the root issue — not symptoms. Be explicit about trade-offs.\n\nObservable problem: ...\nImpact: ...\nRisk of inaction: ...\nStrategic implications: ..." },
+  { id:"options", num:"04", title:"Options Considered", subtitle:"1–1.5 pages · Expose Alternatives", icon:"🔀", color:"#4A148C", light:"#F3E5F5",
+    prompts:["Option A: Description, Benefits, Risks, Cost, Complexity, Long-term","Option B: (same structure)","Option C: (same structure)"],
+    placeholder:"Weak memos hide alternatives. Strong memos expose them.\n\nOption A:\n  Description: ...\n  Benefits: ...\n  Risks: ...\n  Cost: ...\n  Long-term: ...\n\nOption B:\n  ...\n\nOption C:\n  ..." },
+  { id:"analysis", num:"05", title:"Analysis & Rationale", subtitle:"1–1.5 pages · Disciplined Thinking", icon:"🧠", color:"#E65100", light:"#FFF3E0",
+    prompts:["Financial modeling (NPV / ROI / payback)","Risk matrix","Sensitivity assumptions","Strategic alignment","Second-order effects"],
+    placeholder:"This is where intellectual honesty lives.\n\nFinancial model: ...\nRisk matrix: ...\nSensitivity assumptions: ...\nStrategic alignment: ...\nSecond-order effects: ..." },
+  { id:"recommendation", num:"06", title:"Recommendation & Plan", subtitle:"1 page · Decision + Implementation", icon:"✅", color:"#004D40", light:"#E0F2F1",
+    prompts:["We recommend Option ___","Phase 1 (0–90 days)","Phase 2 (3–12 months)","Resources required","KPIs & decision checkpoints","Approval statement"],
+    placeholder:"We recommend Option ___.\n\nPhase 1 (0–90 days): ...\nPhase 2 (3–12 months): ...\nResources required: ...\nGovernance model: ...\nKPI tracking: ...\n\nApproval: ___________________  Date: ________" },
+];
+
+const STATUS_CFG = {
+  draft:      { label:"Draft",             bg:"#E3F2FD", color:"#1565C0" },
+  reading:    { label:"📖 Silent Reading", bg:"#FFF9C4", color:"#F57F17" },
+  discussion: { label:"💬 Discussion",     bg:"#E8F5E9", color:"#1B5E20" },
+  closed:     { label:"✅ Closed",         bg:"#EFEBE9", color:"#4E342E" },
+};
+
+const WRITING_STANDARDS = [
+  "Full sentences — no bullets in core sections",
+  "Active voice throughout",
+  "Data-backed claims only",
+  "Clear trade-offs stated explicitly",
+  "No jargon inflation",
+  "6 pages max — discipline constraint",
+];
+
+const BAR_RAISER = [
+  "FAQ section anticipating objections",
+  '"If we are wrong…" downside scenario',
+  "Pre-mortem risk analysis",
+  "Reversible vs irreversible classification",
+];
+
+// ─── Storage (localStorage) ──────────────────────────────────────────────────
+
+const STORE_KEY = "bezos_memos_v3";
+const loadMemos = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY) || "[]"); } catch { return []; } };
+const saveMemos = (m) => { try { localStorage.setItem(STORE_KEY, JSON.stringify(m)); } catch {} };
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const uid  = () => Math.random().toString(36).slice(2);
+const now  = () => new Date().toISOString();
+const fmt  = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+const wc   = str => str.trim().split(/\s+/).filter(Boolean).length;
+const pct  = m => Math.round(SECTIONS.filter(s => (m.sections[s.id]||"").trim().length > 50).length / SECTIONS.length * 100);
+
+const blankMemo = () => ({
+  id: uid(), title:"", author:"", created:now(), updated:now(), status:"draft",
+  sections: Object.fromEntries(SECTIONS.map(s=>[s.id,""])),
+  barRaiser: {faq:"",downside:"",premortem:"",reversible:""},
+});
+
+// ─── Components ──────────────────────────────────────────────────────────────
+
+function Badge({status}) {
+  const c = STATUS_CFG[status]||STATUS_CFG.draft;
+  return <span style={{background:c.bg,color:c.color,borderRadius:20,padding:"3px 12px",fontSize:11,fontWeight:700}}>{c.label}</span>;
+}
+
+function ReadingTimer({onDone}) {
+  const [mins,setMins]   = useState(25);
+  const [secs,setSecs]   = useState(25*60);
+  const [run,setRun]     = useState(false);
+  const ref              = useRef(null);
+
+  useEffect(()=>{
+    if(run){
+      ref.current = setInterval(()=>setSecs(s=>{
+        if(s<=1){clearInterval(ref.current);setRun(false);onDone();return 0;}
+        return s-1;
+      }),1000);
+    } else clearInterval(ref.current);
+    return ()=>clearInterval(ref.current);
+  },[run]);
+
+  const setPreset = p => { if(!run){setSecs(p*60);setMins(p);} };
+  const m = String(Math.floor(secs/60)).padStart(2,"0");
+  const s = String(secs%60).padStart(2,"0");
+  const progress = ((mins*60-secs)/(mins*60))*100;
+  const r=60, circ=2*Math.PI*r;
+
+  return (
+    <div style={{background:"#0D1B2A",borderRadius:20,padding:"24px 16px",margin:"12px 0",textAlign:"center"}}>
+      <p style={{color:"#90CAF9",fontSize:11,letterSpacing:2,textTransform:"uppercase",marginBottom:16}}>Silent Reading Protocol</p>
+      <div style={{position:"relative",width:140,height:140,margin:"0 auto 16px"}}>
+        <svg width="140" height="140" style={{transform:"rotate(-90deg)"}}>
+          <circle cx="70" cy="70" r={r} fill="none" stroke="#1E3A5F" strokeWidth="10"/>
+          <circle cx="70" cy="70" r={r} fill="none" stroke="#2196F3" strokeWidth="10"
+            strokeDasharray={circ} strokeDashoffset={circ*(1-progress/100)}
+            strokeLinecap="round" style={{transition:"stroke-dashoffset 1s linear"}}/>
+        </svg>
+        <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)"}}>
+          <div style={{color:"#fff",fontSize:32,fontWeight:700,fontFamily:"monospace",letterSpacing:2}}>{m}:{s}</div>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:8,justifyContent:"center",marginBottom:16}}>
+        {[15,20,25,30].map(p=>(
+          <button key={p} onClick={()=>setPreset(p)}
+            style={{background:mins===p&&!run?"#1565C0":"#1E3A5F",color:"#90CAF9",border:"none",borderRadius:8,padding:"4px 10px",fontSize:12}}>
+            {p}m
+          </button>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:12,justifyContent:"center"}}>
+        <button onClick={()=>setRun(r=>!r)}
+          style={{background:run?"#B71C1C":"#1565C0",color:"#fff",border:"none",borderRadius:12,padding:"12px 32px",fontSize:16,fontWeight:700}}>
+          {run?"⏸ Pause":secs===mins*60?"▶ Start":"▶ Resume"}
+        </button>
+        <button onClick={()=>{setSecs(mins*60);setRun(false);}}
+          style={{background:"#1E3A5F",color:"#90CAF9",border:"none",borderRadius:12,padding:"12px 16px",fontSize:18}}>
+          ↺
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MemoViewer({memo}) {
+  return (
+    <div style={{fontFamily:"Georgia,serif",lineHeight:1.8}}>
+      {SECTIONS.map(sec=>(
+        <div key={sec.id} style={{marginBottom:24}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,borderBottom:`2px solid ${sec.color}`,paddingBottom:8,marginBottom:10}}>
+            <span style={{fontSize:18}}>{sec.icon}</span>
+            <span style={{color:sec.color,fontWeight:700,fontSize:14}}>{sec.num} · {sec.title}</span>
+          </div>
+          {memo.sections[sec.id]?.trim()
+            ? <p style={{color:"#222",fontSize:13,margin:0,whiteSpace:"pre-wrap"}}>{memo.sections[sec.id]}</p>
+            : <p style={{color:"#aaa",fontStyle:"italic",fontSize:13}}>— Not completed —</p>}
+        </div>
+      ))}
+      {Object.values(memo.barRaiser).some(v=>v.trim()) && (
+        <div style={{background:"#F3E5F5",borderRadius:14,padding:16,marginTop:8}}>
+          <div style={{color:"#4A148C",fontWeight:700,fontSize:14,marginBottom:12}}>🧩 Bar Raiser Layer</div>
+          {[["FAQ / Objections",memo.barRaiser.faq],["If We Are Wrong…",memo.barRaiser.downside],
+            ["Pre-Mortem",memo.barRaiser.premortem],["Reversibility",memo.barRaiser.reversible]].map(([l,v])=>
+            v?.trim() ? (
+              <div key={l} style={{marginBottom:10}}>
+                <div style={{color:"#6A1B9A",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>{l}</div>
+                <p style={{color:"#333",fontSize:13,margin:"4px 0 0",whiteSpace:"pre-wrap"}}>{v}</p>
+              </div>
+            ) : null
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SectionEditor({sec,value,onChange}) {
+  return (
+    <div style={{marginBottom:16}}>
+      <div style={{background:sec.light,borderRadius:"14px 14px 0 0",padding:"12px 14px",borderLeft:`4px solid ${sec.color}`}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:20}}>{sec.icon}</span>
+          <div>
+            <div style={{color:sec.color,fontWeight:700,fontSize:14}}>{sec.num} · {sec.title}</div>
+            <div style={{color:"#666",fontSize:11}}>{sec.subtitle}</div>
+          </div>
+        </div>
+        <div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:5}}>
+          {sec.prompts.map((p,i)=>(
+            <span key={i} style={{background:"#fff",border:`1px solid ${sec.color}33`,borderRadius:20,padding:"2px 9px",fontSize:10,color:sec.color}}>
+              {p.length>38?p.slice(0,36)+"…":p}
+            </span>
+          ))}
+        </div>
+      </div>
+      <textarea value={value} onChange={e=>onChange(e.target.value)} placeholder={sec.placeholder}
+        style={{width:"100%",minHeight:160,background:"#FAFAFA",border:`1px solid ${sec.color}44`,borderTop:"none",
+          borderRadius:"0 0 14px 14px",padding:14,fontSize:13,lineHeight:1.7,color:"#222"}}/>
+      <div style={{textAlign:"right",fontSize:10,color:"#999",marginTop:2}}>{wc(value)} words</div>
+    </div>
+  );
+}
+
+// ─── Main App ────────────────────────────────────────────────────────────────
+
+function App() {
+  const [memos,setMemos]         = useState(()=>loadMemos());
+  const [view,setView]           = useState("list");
+  const [memo,setMemo]           = useState(null);
+  const [secIdx,setSecIdx]       = useState(0);
+  const [tab,setTab]             = useState("edit");
+  const [barRaiser,setBarRaiser] = useState(false);
+  const [readDone,setReadDone]   = useState(false);
+  const [confirmDel,setConfirmDel] = useState(null);
+
+  const persist = updated => { setMemos(updated); saveMemos(updated); };
+
+  const newMemo = () => {
+    const m = blankMemo();
+    const next = [m,...memos];
+    persist(next);
+    setMemo(m); setSecIdx(0); setTab("edit"); setBarRaiser(false); setView("editor");
+  };
+
+  const updateMemo = (field,val) => {
+    const next = {...memo,[field]:val,updated:now()};
+    setMemo(next);
+    persist(memos.map(m=>m.id===next.id?next:m));
+  };
+
+  const updateSection = (id,val) => updateMemo("sections",{...memo.sections,[id]:val});
+  const updateBR      = (k,val) => updateMemo("barRaiser",{...memo.barRaiser,[k]:val});
+  const setStatus     = s => updateMemo("status",s);
+
+  const openEditor  = m => { setMemo(m); setSecIdx(0); setTab("edit"); setBarRaiser(false); setView("editor"); };
+  const openMeeting = m => { setMemo(m); setReadDone(false); setView("meeting"); };
+  const deleteMemo  = id => { persist(memos.filter(m=>m.id!==id)); setConfirmDel(null); if(memo?.id===id){setMemo(null);setView("list");} };
+
+  // ── LIST ────────────────────────────────────────────────────────────────────
+  if(view==="list") return (
+    <div className="app">
+      <div style={{background:"#0D1B2A",padding:"env(safe-area-inset-top,44px) 16px 20px",position:"sticky",top:0,zIndex:10}}>
+        <div style={{color:"#90CAF9",fontSize:10,letterSpacing:3,textTransform:"uppercase",marginBottom:2}}>Amazon · Decision Memo</div>
+        <div style={{color:"#fff",fontSize:24,fontWeight:800}}>6-Page Memo</div>
+        <div style={{color:"#607D8B",fontSize:12,marginBottom:14}}>Narrative · Rigor · Clarity</div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={newMemo}
+            style={{flex:1,background:"#1565C0",color:"#fff",border:"none",borderRadius:12,padding:13,fontSize:14,fontWeight:700}}>
+            + New Memo
+          </button>
+          <button onClick={()=>setView("standards")}
+            style={{background:"#1E3A5F",color:"#90CAF9",border:"none",borderRadius:12,padding:"13px 18px",fontSize:18}}>
+            📋
+          </button>
+        </div>
+      </div>
+      <div style={{padding:"14px 14px 100px"}}>
+        {memos.length===0?(
+          <div style={{textAlign:"center",padding:"70px 20px",color:"#999"}}>
+            <div style={{fontSize:52}}>📝</div>
+            <p style={{fontWeight:700,color:"#555",marginTop:12,fontSize:16}}>No memos yet</p>
+            <p style={{fontSize:13,marginTop:4}}>Create your first 6-page narrative memo</p>
+          </div>
+        ):memos.map(m=>{
+          const p=pct(m); const sc=STATUS_CFG[m.status]||STATUS_CFG.draft;
+          return (
+            <div key={m.id} style={{background:"#fff",borderRadius:16,padding:16,marginBottom:12,boxShadow:"0 2px 8px rgba(0,0,0,0.07)"}}>
+              {confirmDel===m.id?(
+                <div style={{textAlign:"center"}}>
+                  <p style={{color:"#B71C1C",fontWeight:700,marginBottom:12}}>Delete "{m.title||"Untitled"}"?</p>
+                  <div style={{display:"flex",gap:10}}>
+                    <button onClick={()=>setConfirmDel(null)} style={{flex:1,background:"#eee",border:"none",borderRadius:10,padding:10,fontSize:13}}>Cancel</button>
+                    <button onClick={()=>deleteMemo(m.id)} style={{flex:1,background:"#B71C1C",color:"#fff",border:"none",borderRadius:10,padding:10,fontSize:13,fontWeight:700}}>Delete</button>
+                  </div>
+                </div>
+              ):(
+                <>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:700,fontSize:15,color:"#111",marginBottom:3}}>{m.title||"Untitled Memo"}</div>
+                      <div style={{color:"#888",fontSize:11,marginBottom:8}}>by {m.author||"Unknown"} · {fmt(m.updated)}</div>
+                      <Badge status={m.status}/>
+                    </div>
+                    <button onClick={()=>setConfirmDel(m.id)} style={{background:"none",border:"none",color:"#ddd",fontSize:20,padding:"0 0 0 8px"}}>×</button>
+                  </div>
+                  <div style={{background:"#F0F0F0",borderRadius:10,height:5,margin:"12px 0 4px",overflow:"hidden"}}>
+                    <div style={{background:p===100?"#1B5E20":"#1565C0",width:`${p}%`,height:"100%",borderRadius:10,transition:"width 0.4s"}}/>
+                  </div>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
+                    <span style={{fontSize:10,color:"#999"}}>{p}% complete</span>
+                    <span style={{fontSize:10,color:"#999"}}>{SECTIONS.filter(s=>(m.sections[s.id]||"").trim().length>50).length}/{SECTIONS.length} sections</span>
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>openEditor(m)}
+                      style={{flex:1,background:"#E3F2FD",color:"#1565C0",border:"none",borderRadius:10,padding:10,fontSize:13,fontWeight:600}}>
+                      ✏️ Edit
+                    </button>
+                    <button onClick={()=>openMeeting(m)}
+                      style={{flex:1,background:"#0D1B2A",color:"#90CAF9",border:"none",borderRadius:10,padding:10,fontSize:13,fontWeight:600}}>
+                      🏛 Meeting
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  // ── STANDARDS ───────────────────────────────────────────────────────────────
+  if(view==="standards") return (
+    <div className="app">
+      <div style={{background:"#0D1B2A",padding:"env(safe-area-inset-top,44px) 16px 16px",position:"sticky",top:0}}>
+        <button onClick={()=>setView("list")} style={{background:"none",border:"none",color:"#90CAF9",fontSize:14,marginBottom:6}}>← Back</button>
+        <div style={{color:"#fff",fontSize:20,fontWeight:800}}>Writing Standards</div>
+        <div style={{color:"#607D8B",fontSize:12}}>Bezos-enforced discipline</div>
+      </div>
+      <div style={{padding:"14px 14px 100px"}}>
+        {[
+          {title:"✍️ Writing Standards",bg:"#fff",tc:"#0D1B2A",items:WRITING_STANDARDS,bullet:(i)=>`${i+1}.`,bc:"#1565C0"},
+          {title:"🧩 Bar Raiser Standard",bg:"#F3E5F5",tc:"#4A148C",items:BAR_RAISER,bullet:()=>"+",bc:"#6A1B9A"},
+          {title:"🏛 Meeting Protocol",bg:"#E8F5E9",tc:"#1B5E20",items:["Memo distributed at meeting start","20–30 minutes silent reading","Discussion begins only after everyone finishes","Debate focuses on logic gaps, not aesthetics"],bullet:(i)=>`${i+1}.`,bc:"#1B5E20"},
+          {title:"🧠 Why Narratives Work",bg:"#FFF3E0",tc:"#E65100",items:["Force System 2 analytical reasoning","Reduce ambiguity","Improve shared mental models","Expose weak logic early"],bullet:()=>"→",bc:"#E65100"},
+        ].map(({title,bg,tc,items,bullet,bc})=>(
+          <div key={title} style={{background:bg,borderRadius:16,padding:16,marginBottom:14,boxShadow:"0 2px 8px rgba(0,0,0,0.05)"}}>
+            <div style={{fontWeight:700,color:tc,fontSize:15,marginBottom:12}}>{title}</div>
+            {items.map((item,i)=>(
+              <div key={i} style={{display:"flex",gap:10,marginBottom:10,alignItems:"flex-start"}}>
+                <span style={{color:bc,fontWeight:700,minWidth:16}}>{bullet(i)}</span>
+                <span style={{color:"#333",fontSize:13}}>{item}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  // ── EDITOR ──────────────────────────────────────────────────────────────────
+  if(view==="editor"&&memo) {
+    const sec = SECTIONS[secIdx];
+    const p   = pct(memo);
+    return (
+      <div className="app">
+        <div style={{background:"#0D1B2A",padding:"env(safe-area-inset-top,44px) 14px 10px",position:"sticky",top:0,zIndex:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <button onClick={()=>setView("list")} style={{background:"none",border:"none",color:"#90CAF9",fontSize:13}}>← Memos</button>
+            <Badge status={memo.status}/>
+          </div>
+          <input value={memo.title} onChange={e=>updateMemo("title",e.target.value)} placeholder="Memo title…"
+            style={{width:"100%",background:"transparent",border:"none",color:"#fff",fontSize:17,fontWeight:700}}/>
+          <input value={memo.author} onChange={e=>updateMemo("author",e.target.value)} placeholder="Author name…"
+            style={{width:"100%",background:"transparent",border:"none",color:"#607D8B",fontSize:12,marginTop:2}}/>
+          <div style={{background:"#1E3A5F",borderRadius:10,height:4,margin:"10px 0 0",overflow:"hidden"}}>
+            <div style={{background:"#2196F3",width:`${p}%`,height:"100%",transition:"width 0.4s"}}/>
+          </div>
+          <div style={{display:"flex",gap:4,marginTop:8}}>
+            {["edit","preview"].map(t=>(
+              <button key={t} onClick={()=>setTab(t)}
+                style={{flex:1,background:tab===t?"#1565C0":"transparent",color:tab===t?"#fff":"#607D8B",
+                  border:"none",borderRadius:8,padding:"6px",fontSize:12,fontWeight:600,textTransform:"capitalize"}}>
+                {t==="edit"?"✏️ Edit":"👁 Preview"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {tab==="preview"?(
+          <div style={{padding:"14px 14px 100px"}}>
+            {memo.title&&<h1 style={{fontFamily:"Georgia,serif",color:"#0D1B2A",fontSize:20,marginBottom:4}}>{memo.title}</h1>}
+            {memo.author&&<p style={{color:"#888",fontSize:12,marginBottom:20}}>By {memo.author} · {fmt(memo.updated)}</p>}
+            <MemoViewer memo={memo}/>
+          </div>
+        ):(
+          <>
+            {/* Section pills */}
+            <div style={{overflowX:"auto",display:"flex",gap:8,padding:"10px 14px",background:"#fff",borderBottom:"1px solid #eee"}}>
+              {SECTIONS.map((s,i)=>{
+                const filled=(memo.sections[s.id]||"").trim().length>50;
+                const active=secIdx===i&&!barRaiser;
+                return (
+                  <button key={s.id} onClick={()=>{setSecIdx(i);setBarRaiser(false);}}
+                    style={{flexShrink:0,background:active?s.color:filled?"#E8F5E9":"#F0F0F0",
+                      color:active?"#fff":filled?"#1B5E20":"#666",border:"none",borderRadius:20,
+                      padding:"5px 14px",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>
+                    {s.num}
+                  </button>
+                );
+              })}
+              <button onClick={()=>{setBarRaiser(true);}}
+                style={{flexShrink:0,background:barRaiser?"#4A148C":"#F3E5F5",color:barRaiser?"#fff":"#6A1B9A",
+                  border:"none",borderRadius:20,padding:"5px 14px",fontSize:11,fontWeight:600}}>
+                🧩 +
+              </button>
+            </div>
+
+            <div style={{padding:"12px 14px 100px"}}>
+              {!barRaiser?(
+                <>
+                  <SectionEditor sec={sec} value={memo.sections[sec.id]||""} onChange={v=>updateSection(sec.id,v)}/>
+                  <div style={{display:"flex",gap:8,marginTop:4}}>
+                    {secIdx>0&&(
+                      <button onClick={()=>setSecIdx(i=>i-1)}
+                        style={{flex:1,background:"#E3F2FD",color:"#1565C0",border:"none",borderRadius:12,padding:12,fontSize:13,fontWeight:600}}>
+                        ← Previous
+                      </button>
+                    )}
+                    {secIdx<SECTIONS.length-1?(
+                      <button onClick={()=>setSecIdx(i=>i+1)}
+                        style={{flex:1,background:"#1565C0",color:"#fff",border:"none",borderRadius:12,padding:12,fontSize:13,fontWeight:700}}>
+                        Next →
+                      </button>
+                    ):(
+                      <button onClick={()=>openMeeting(memo)}
+                        style={{flex:1,background:"#0D1B2A",color:"#90CAF9",border:"none",borderRadius:12,padding:12,fontSize:13,fontWeight:700}}>
+                        🏛 Start Meeting
+                      </button>
+                    )}
+                  </div>
+                </>
+              ):(
+                <div>
+                  <div style={{background:"#F3E5F5",borderRadius:14,padding:14,marginBottom:16}}>
+                    <div style={{color:"#4A148C",fontWeight:700,marginBottom:6}}>🧩 Bar Raiser Layer</div>
+                    <div style={{color:"#6A1B9A",fontSize:12}}>Optional advanced content to elevate memo quality to Bar Raiser standard.</div>
+                  </div>
+                  {[["faq","❓ FAQ / Objections","Anticipated questions and answers…"],
+                    ["downside",'⚠️ "If We Are Wrong…"',"Downside scenario if recommendation fails…"],
+                    ["premortem","🔮 Pre-Mortem","Assume it's 12 months later and this failed. Why?"],
+                    ["reversible","↩️ Reversibility","Is this decision reversible or irreversible? Exit conditions?"],
+                  ].map(([k,label,ph])=>(
+                    <div key={k} style={{marginBottom:16}}>
+                      <div style={{color:"#4A148C",fontWeight:600,fontSize:13,marginBottom:6}}>{label}</div>
+                      <textarea value={memo.barRaiser[k]||""} onChange={e=>updateBR(k,e.target.value)} placeholder={ph}
+                        style={{width:"100%",minHeight:90,background:"#fff",border:"1px solid #CE93D833",borderRadius:12,
+                          padding:12,fontSize:13,lineHeight:1.7,color:"#222"}}/>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  // ── MEETING ─────────────────────────────────────────────────────────────────
+  if(view==="meeting"&&memo) {
+    const STEPS = ["draft","reading","discussion","closed"];
+    const stepLabels = ["Draft","Read","Discuss","Closed"];
+    return (
+      <div className="app">
+        <div style={{background:"#0D1B2A",padding:"env(safe-area-inset-top,44px) 14px 0",position:"sticky",top:0,zIndex:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <button onClick={()=>setView("list")} style={{background:"none",border:"none",color:"#90CAF9",fontSize:13}}>← Memos</button>
+            <button onClick={()=>openEditor(memo)} style={{background:"#1E3A5F",color:"#90CAF9",border:"none",borderRadius:8,padding:"6px 12px",fontSize:12}}>
+              ✏️ Edit
+            </button>
+          </div>
+          <div style={{color:"#fff",fontSize:16,fontWeight:800}}>{memo.title||"Untitled Memo"}</div>
+          <div style={{color:"#607D8B",fontSize:11,marginBottom:10}}>by {memo.author||"Unknown"} · {fmt(memo.updated)}</div>
+          <div style={{display:"flex",gap:0}}>
+            {STEPS.map((s,i)=>{
+              const sc=STATUS_CFG[s]; const active=memo.status===s;
+              const passed=STEPS.indexOf(memo.status)>i;
+              return (
+                <button key={s} onClick={()=>setStatus(s)}
+                  style={{flex:1,background:active?sc.bg:passed?"#1E3A5F":"transparent",
+                    color:active?sc.color:passed?"#4CAF50":"#607D8B",border:"none",
+                    borderTop:`3px solid ${active?sc.color:passed?"#4CAF50":"#1E3A5F"}`,
+                    padding:"8px 2px",fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:0.5}}>
+                  {stepLabels[i]}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{padding:"12px 14px 100px"}}>
+          {memo.status==="draft"&&(
+            <div style={{background:"#E3F2FD",borderRadius:14,padding:16,marginBottom:14,textAlign:"center"}}>
+              <div style={{fontSize:28,marginBottom:8}}>📄</div>
+              <div style={{color:"#1565C0",fontWeight:700,marginBottom:6}}>Ready to begin?</div>
+              <div style={{color:"#1976D2",fontSize:12,marginBottom:14}}>Distribute memo to all attendees, then start the silent reading protocol.</div>
+              <button onClick={()=>setStatus("reading")}
+                style={{background:"#1565C0",color:"#fff",border:"none",borderRadius:10,padding:"11px 28px",fontSize:13,fontWeight:700}}>
+                Begin Silent Reading →
+              </button>
+            </div>
+          )}
+          {memo.status==="reading"&&<ReadingTimer onDone={()=>{setReadDone(true);setStatus("discussion");}}/>}
+          {readDone&&(
+            <div style={{background:"#E8F5E9",borderRadius:14,padding:14,marginBottom:12,textAlign:"center"}}>
+              <div style={{fontSize:28}}>✅</div>
+              <div style={{color:"#1B5E20",fontWeight:700,marginTop:6}}>Reading Complete</div>
+              <div style={{color:"#388E3C",fontSize:12}}>Discussion may begin. Focus on logic gaps, not aesthetics.</div>
+            </div>
+          )}
+          {memo.status==="discussion"&&!readDone&&(
+            <div style={{background:"#FFF9C4",borderRadius:14,padding:14,marginBottom:14}}>
+              <div style={{color:"#F57F17",fontWeight:700,marginBottom:4}}>💬 Discussion Phase</div>
+              <div style={{color:"#F9A825",fontSize:12}}>Debate focuses on logic gaps and evidence — not slide aesthetics or formatting.</div>
+            </div>
+          )}
+          {memo.status==="closed"&&(
+            <div style={{background:"#EFEBE9",borderRadius:14,padding:16,marginBottom:14,textAlign:"center"}}>
+              <div style={{fontSize:28}}>🏁</div>
+              <div style={{color:"#4E342E",fontWeight:700,marginTop:6}}>Decision Closed</div>
+              <div style={{color:"#795548",fontSize:12}}>This memo is archived as a decision artifact.</div>
+            </div>
+          )}
+          <div style={{background:"#fff",borderRadius:16,padding:16,boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}}>
+            <MemoViewer memo={memo}/>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
